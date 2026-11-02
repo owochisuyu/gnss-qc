@@ -1,0 +1,14 @@
+.cache/
+__pycache__/
+*.pyc
+.venv/
+samples/
+*.26o
+*.nav
+*.obs
+*.rnx
+outputs/*.log
+outputs/*.stdout.log
+outputs/*.stderr.log
+outputs/*.pairs.json
+outputs/*.result.json

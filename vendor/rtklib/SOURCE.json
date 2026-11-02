@@ -1,0 +1,55 @@
+{
+  "repository": "https://github.com/tomojitakasu/RTKLIB",
+  "commit": "180043ee24b6d2b168f98b64be15f69d50046b1a",
+  "branch": "rtklib_2.4.3",
+  "files": [
+    {
+      "file": "src/rtklib.h",
+      "sha256": "c00abb9eee5b89de376ab3a971555459b4efbf92410b8efb0141d168ae94160d"
+    },
+    {
+      "file": "src/rtkcmn.c",
+      "sha256": "3f57e10a71e72bc44dc7453ed1b7a6706dd42d1ab8f2103686f1672c1a19195a"
+    },
+    {
+      "file": "src/rinex.c",
+      "sha256": "de6c39dc2ad64d0e9bee4859e8ff91504a36c14f650185e50bc2e30d60c33871"
+    },
+    {
+      "file": "src/ephemeris.c",
+      "sha256": "d1f50cfa0a7935844726d389c33b9c6a9270904cfaa5a7967a73e1d628eefa59"
+    },
+    {
+      "file": "src/preceph.c",
+      "sha256": "034e9d0127d7e06de599186b27163686dd10ead3e5853419feed3ea2da1114f7"
+    },
+    {
+      "file": "src/sbas.c",
+      "sha256": "d8ea458b66913720c01694b90fd714edd3fdeb3b9026bff8385f96355d6c586a"
+    },
+    {
+      "file": "src/pntpos.c",
+      "sha256": "4ba8fe46e8738f93ed435e3e5b7d5459884bc5da22c0dca10d008428b08d9be9"
+    },
+    {
+      "file": "src/ionex.c",
+      "sha256": "bf6f6a3cbb3ff546c4e590cc6650b424a5236cd5cbdbcacb6e0ae5f7a4b89fa5"
+    },
+    {
+      "file": "src/ppp.c",
+      "sha256": "1be8d7328f75e7ceb7debf880bd4b259dd18a9721afd87295cd4657e01179b8d"
+    },
+    {
+      "file": "app/winapp/rtkplot/plotdata.cpp",
+      "sha256": "1d84dcf7cbce778e52c2cc1a559973d0a4138dcbe0560a1e226f2fab907da569"
+    },
+    {
+      "file": "readme.txt",
+      "sha256": "e9d81997226443419795a21b1dc0b03da1769f76f01d5ea8e2bbb4744e000580"
+    },
+    {
+      "file": "LICENSE.txt",
+      "sha256": "219747832d49ee958457b2934080ab8d94bd9d8e45fcb1c36f89776fd2c5ed8a"
+    }
+  ]
+}
