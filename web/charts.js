@@ -55,13 +55,118 @@ export class TimeAxis extends Base{
   draw(){const setup=this.prepare();if(!setup)return;const{ctx,w}=setup;ctx.font='9px Consolas,monospace';ctx.fillStyle='#a2b19e';for(let i=0;i<6;i++){ctx.textAlign=i===0?'left':i===5?'right':'center';ctx.fillText(timeLabel(this.state.start+(this.state.end-this.state.start)*i/5),49+(w-68)*i/5,17)}}
 }
 export class SkyChart extends Base{
-  constructor(canvas,state,satellites,index,mask){super(canvas,state);this.satellites=satellites;this.index=index;this.mask=mask;this.draw()}
-  draw(){if(!this.satellites)return;const setup=this.prepare();if(!setup)return;const{ctx,w,h}=setup,cx=w/2,cy=h/2,r=Math.min(w,h)/2-38;
-    ctx.strokeStyle='#e2eade';ctx.lineWidth=1;for(const el of[0,30,60]){ctx.beginPath();ctx.arc(cx,cy,r*(90-el)/90,0,Math.PI*2);ctx.stroke();ctx.fillStyle='#a9b7a2';ctx.font='9px Consolas';ctx.textAlign='left';ctx.fillText(`${el}°`,cx+4,cy-r*(90-el)/90+12)}
-    ctx.strokeStyle='#eaf0e5';for(let a=0;a<Math.PI*2;a+=Math.PI/4){ctx.beginPath();ctx.moveTo(cx,cy);ctx.lineTo(cx+Math.sin(a)*r,cy-Math.cos(a)*r);ctx.stroke()}
-    ctx.fillStyle='#7e9671';ctx.font='10px Consolas';ctx.textAlign='center';ctx.fillText('N',cx,cy-r-14);ctx.fillText('S',cx,cy+r+20);ctx.fillText('E',cx+r+19,cy+4);ctx.fillText('W',cx-r-19,cy+4);
-    ctx.strokeStyle='#d7c5a6';ctx.setLineDash([4,4]);ctx.beginPath();ctx.arc(cx,cy,r*(90-this.mask)/90,0,Math.PI*2);ctx.stroke();ctx.setLineDash([]);
-    let count=0;for(const s of this.satellites){const row=s.track.find(p=>p[0]===this.index);if(!row||row[1]==null||row[2]<0)continue;const az=row[1]*Math.PI/180,rr=r*(90-row[2])/90,x=cx+Math.sin(az)*rr,y=cy-Math.cos(az)*rr;ctx.fillStyle=colors[s.system];ctx.globalAlpha=row[2]<this.mask||row[4]!==0?.3:1;ctx.beginPath();ctx.arc(x,y,4,0,Math.PI*2);ctx.fill();ctx.font='9px Consolas';ctx.fillText(s.id,x,y-8);ctx.globalAlpha=1;count++}
-    if(!count){ctx.fillStyle='#9aaa90';ctx.font='12px "Microsoft YaHei"';ctx.fillText('此历元没有可用天空位置',cx,cy+17)}
+  constructor(canvas,state,satellites,index,mask,options={}){
+    super(canvas,state);
+    this.satellites=satellites;
+    this.index=index;
+    this.mask=mask||10;
+    this.options=options; // { trajectory: bool, obstruction: object, timeRange: [start, end] }
+    this.draw();
+  }
+  draw(){
+    if(!this.satellites)return;
+    const setup=this.prepare();if(!setup)return;
+    const{ctx,w,h}=setup,cx=w/2,cy=h/2,r=Math.min(w,h)/2-38;
+    
+    // Draw obstruction sectors if detected
+    const obstr = this.options.obstruction;
+    if(obstr && obstr.sectors && obstr.sectors.length){
+      ctx.save();
+      for(const sec of obstr.sectors){
+        const a1 = (sec.az_start-90)*Math.PI/180;
+        const a2 = (sec.az_end-90)*Math.PI/180;
+        const rIn = r*(90-sec.cutoff_elevation)/90;
+        ctx.fillStyle = sec.severity==='CRITICAL' ? 'rgba(215, 68, 62, 0.22)' : 'rgba(224, 140, 52, 0.20)';
+        ctx.strokeStyle = sec.severity==='CRITICAL' ? '#d7443e' : '#e08c34';
+        ctx.lineWidth = 1.2;
+        ctx.setLineDash([3,3]);
+        ctx.beginPath();
+        ctx.arc(cx, cy, r, a1, a2);
+        ctx.arc(cx, cy, Math.max(0, rIn), a2, a1, true);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+        // Label
+        const aMid = (a1+a2)/2;
+        const tx = cx + Math.cos(aMid)*(rIn+r)/2;
+        const ty = cy + Math.sin(aMid)*(rIn+r)/2;
+        ctx.fillStyle = '#b73830';
+        ctx.font = '9px "Microsoft YaHei", sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText(`遮挡~${Math.round(sec.cutoff_elevation)}°`, tx, ty+3);
+      }
+      ctx.restore();
+    }
+
+    // Grid circles
+    ctx.strokeStyle='#e2eade';ctx.lineWidth=1;
+    for(const el of[0,30,60]){
+      ctx.beginPath();ctx.arc(cx,cy,r*(90-el)/90,0,Math.PI*2);ctx.stroke();
+      ctx.fillStyle='#a9b7a2';ctx.font='9px Consolas';ctx.textAlign='left';
+      ctx.fillText(`${el}°`,cx+4,cy-r*(90-el)/90+12);
+    }
+    // Cross axes
+    ctx.strokeStyle='#eaf0e5';
+    for(let a=0;a<Math.PI*2;a+=Math.PI/4){
+      ctx.beginPath();ctx.moveTo(cx,cy);
+      ctx.lineTo(cx+Math.sin(a)*r,cy-Math.cos(a)*r);
+      ctx.stroke();
+    }
+    // Cardinal labels
+    ctx.fillStyle='#7e9671';ctx.font='10px Consolas';ctx.textAlign='center';
+    ctx.fillText('N',cx,cy-r-14);ctx.fillText('S',cx,cy+r+20);
+    ctx.fillText('E',cx+r+19,cy+4);ctx.fillText('W',cx-r-19,cy+4);
+    
+    // Mask circle
+    ctx.strokeStyle='#d7c5a6';ctx.setLineDash([4,4]);
+    ctx.beginPath();ctx.arc(cx,cy,r*(90-this.mask)/90,0,Math.PI*2);ctx.stroke();
+    ctx.setLineDash([]);
+
+    let count=0;
+    if(this.options.trajectory){
+      // Trajectory Mode: draw continuous satellite flight tracks in the time window
+      const range = this.options.timeRange || [this.state.start, this.state.end];
+      for(const s of this.satellites){
+        const pts = s.track.filter(p => p[1]!=null && p[2]>=0);
+        if(!pts.length) continue;
+        ctx.strokeStyle = colors[s.system] || '#4d8c78';
+        ctx.lineWidth = 1.4;
+        ctx.globalAlpha = 0.85;
+        ctx.beginPath();
+        let pen = false;
+        let lastPt = null;
+        for(const p of pts){
+          const az = p[1]*Math.PI/180, rr = r*(90-p[2])/90;
+          const x = cx + Math.sin(az)*rr, y = cy - Math.cos(az)*rr;
+          if(!pen){ ctx.moveTo(x, y); pen = true; } else { ctx.lineTo(x, y); }
+          lastPt = {x, y, az, el: p[2]};
+        }
+        ctx.stroke();
+        // Dot at final point and satellite label
+        if(lastPt){
+          ctx.beginPath();ctx.arc(lastPt.x, lastPt.y, 2.5, 0, Math.PI*2);
+          ctx.fillStyle = colors[s.system];ctx.fill();
+          ctx.font = '9px Consolas';ctx.fillStyle = colors[s.system];
+          ctx.fillText(s.id, lastPt.x, lastPt.y-5);
+          count++;
+        }
+      }
+      ctx.globalAlpha = 1;
+    } else {
+      // Snapshot Mode (single epoch index)
+      for(const s of this.satellites){
+        const row=s.track.find(p=>p[0]===this.index);
+        if(!row||row[1]==null||row[2]<0)continue;
+        const az=row[1]*Math.PI/180,rr=r*(90-row[2])/90,x=cx+Math.sin(az)*rr,y=cy-Math.cos(az)*rr;
+        ctx.fillStyle=colors[s.system];ctx.globalAlpha=row[2]<this.mask||row[4]!==0?.3:1;
+        ctx.beginPath();ctx.arc(x,y,4,0,Math.PI*2);ctx.fill();
+        ctx.font='9px Consolas';ctx.fillText(s.id,x,y-8);
+        ctx.globalAlpha=1;count++;
+      }
+    }
+    if(!count){
+      ctx.fillStyle='#9aaa90';ctx.font='12px "Microsoft YaHei"';ctx.textAlign='center';
+      ctx.fillText('此范围没有可用天空轨迹',cx,cy+17);
+    }
   }
 }

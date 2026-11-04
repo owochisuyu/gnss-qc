@@ -17,6 +17,14 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from qc.analysis import Options, analyze
+from qc.diagnosis import (
+    slice_analysis_result,
+    evaluate_quality_issues,
+    detect_sky_obstruction,
+    diagnose_station_window,
+    parse_timestamp,
+    iso_gpst,
+)
 
 ROOT = Path(__file__).resolve().parent
 CACHE = ROOT / ".cache"
@@ -46,6 +54,17 @@ class AnalysisRequest(BaseModel):
     options: dict = Field(default_factory=dict)
 
 
+class BatchDiagnosticsRequest(BaseModel):
+    job_ids: list[str] | None = None
+    start_time: float | str | None = None
+    end_time: float | str | None = None
+
+
+class BatchLoadRequest(BaseModel):
+    samples: list[str]
+    options: dict = Field(default_factory=dict)
+
+
 def options_from(data):
     try:
         return Options(**data).validate()
@@ -68,11 +87,11 @@ def get_job(identifier, require_result=False):
 
 def submit(obs, nav, options, owned=None, names=None):
     with guard:
-        if sum(j["status"] in ("queued","running") for j in jobs.values()) >= 3:
-            raise HTTPException(429,"已有 3 个分析任务在处理，请稍后重试。")
-        # Keep up to four completed analyses in this local process.
+        if sum(j["status"] in ("queued","running") for j in jobs.values()) >= 12:
+            raise HTTPException(429,"分析队列已满（最多 12 个并发排队任务），请稍后重试。")
+        # Keep up to 16 completed analyses in this local process for multi-station comparison.
         finished=[j for j in jobs.values() if j["status"] in ("done","error")]
-        for old in sorted(finished,key=lambda j:j["created"])[:-3]:
+        for old in sorted(finished,key=lambda j:j["created"])[:-15]:
             jobs.pop(old["id"],None)
             if old["owned"]:
                 folder=Path(old["owned"]).resolve()
@@ -116,6 +135,138 @@ def sample(request: AnalysisRequest):
     if request.sample not in {s["id"] for s in samples()}:
         raise HTTPException(404,"本地示例不存在。")
     return submit(SAMPLES/f"{request.sample}_20261028.26o",SAMPLES/f"{request.sample}_61028.nav",options_from(request.options))
+
+
+@app.post("/api/batch/load")
+def batch_load(request: BatchLoadRequest):
+    available = {s["id"]: s for s in samples()}
+    created_jobs = []
+    settings = options_from(request.options)
+    for sid in request.samples:
+        if sid in available:
+            obs = SAMPLES / f"{sid}_20261028.26o"
+            nav = SAMPLES / f"{sid}_61028.nav"
+            created_jobs.append(submit(obs, nav, settings, names={"obs": obs.name, "nav": nav.name}))
+    return created_jobs
+
+
+@app.get("/api/batch/timespan")
+def batch_timespan(job_ids: str = ""):
+    selected_ids = [j.strip() for j in job_ids.split(",") if j.strip()] if job_ids else []
+    done_jobs = [j for j in jobs.values() if j["status"] == "done" and (not selected_ids or j["id"] in selected_ids)]
+    if not done_jobs:
+        return {"has_jobs": False, "stations": 0}
+
+    starts = [j["result"]["series"][0]["time"] for j in done_jobs if j["result"].get("series")]
+    ends = [j["result"]["series"][-1]["time"] for j in done_jobs if j["result"].get("series")]
+    if not starts or not ends:
+        return {"has_jobs": False, "stations": len(done_jobs)}
+
+    earliest_start = min(starts)
+    latest_end = max(ends)
+    common_start = max(starts)
+    common_end = min(ends)
+    has_overlap = common_start < common_end
+
+    station_spans = []
+    for j in done_jobs:
+        s_series = j["result"].get("series", [])
+        if s_series:
+            st = s_series[0]["time"]
+            et = s_series[-1]["time"]
+            station_spans.append({
+                "job_id": j["id"],
+                "station": re.split(r"[_.]", j["label"])[0],
+                "start": iso_gpst(st),
+                "end": iso_gpst(et),
+                "start_time": st,
+                "end_time": et,
+                "epochs": len(s_series)
+            })
+
+    return {
+        "has_jobs": True,
+        "stations": len(done_jobs),
+        "earliest_start": iso_gpst(earliest_start),
+        "latest_end": iso_gpst(latest_end),
+        "earliest_start_time": earliest_start,
+        "latest_end_time": latest_end,
+        "common_start": iso_gpst(common_start) if has_overlap else None,
+        "common_end": iso_gpst(common_end) if has_overlap else None,
+        "common_start_time": common_start if has_overlap else None,
+        "common_end_time": common_end if has_overlap else None,
+        "has_overlap": has_overlap,
+        "overlap_duration": (common_end - common_start) if has_overlap else 0,
+        "station_spans": station_spans
+    }
+
+
+@app.post("/api/batch/diagnostics")
+def batch_diagnostics(request: BatchDiagnosticsRequest):
+    selected_ids = set(request.job_ids) if request.job_ids else None
+    done_jobs = [j for j in jobs.values() if j["status"] == "done" and (selected_ids is None or j["id"] in selected_ids)]
+    if not done_jobs:
+        return {"stations": [], "summary_count": 0}
+
+    results = []
+    for j in sorted(done_jobs, key=lambda x: x["label"]):
+        diag = diagnose_station_window(j["result"], request.start_time, request.end_time)
+        diag["job_id"] = j["id"]
+        diag["label"] = j["label"]
+        results.append(diag)
+
+    # Compute overall network health
+    status_counts = {"PASS": 0, "WARN": 0, "CRITICAL": 0}
+    for r in results:
+        status_counts[r["status"]] = status_counts.get(r["status"], 0) + 1
+
+    overall_status = "CRITICAL" if status_counts["CRITICAL"] > 0 else "WARN" if status_counts["WARN"] > 0 else "PASS"
+
+    return {
+        "stations": results,
+        "total": len(results),
+        "status_counts": status_counts,
+        "overall_status": overall_status,
+        "window": {
+            "start": iso_gpst(parse_timestamp(request.start_time)) if request.start_time else None,
+            "end": iso_gpst(parse_timestamp(request.end_time)) if request.end_time else None,
+            "start_time": parse_timestamp(request.start_time),
+            "end_time": parse_timestamp(request.end_time)
+        }
+    }
+
+
+@app.get("/api/jobs/{identifier}/window")
+def station_window(identifier: str, start_time: float | str | None = None, end_time: float | str | None = None):
+    job = get_job(identifier, True)
+    sliced = slice_analysis_result(job["result"], start_time, end_time)
+    diag = evaluate_quality_issues(sliced)
+    obstr = detect_sky_obstruction(sliced["satellites"])
+    station_name = (
+        job.get("result", {}).get("summary", {}).get("station")
+        or (re.split(r"[_.]", job["label"])[0] if job.get("label") else "Station")
+    )
+    return {
+        "station": station_name,
+        "job_id": identifier,
+        "label": job["label"],
+        "window": {
+            "start": sliced["start"],
+            "end": sliced["end"],
+            "start_time": sliced["start_time"],
+            "end_time": sliced["end_time"],
+            "duration": sliced["summary"].get("duration_seconds", 0)
+        },
+        "status": diag["status"],
+        "score": diag["score"],
+        "summary": sliced["summary"],
+        "by_system": sliced["by_system"],
+        "series": sliced["series"],
+        "satellites": sliced["satellites"],
+        "events": sliced["events"],
+        "diagnostics": diag,
+        "obstruction": obstr
+    }
 
 
 def safe_name(name, default):
