@@ -123,45 +123,91 @@ export class SkyChart extends Base{
     ctx.setLineDash([]);
 
     let count=0;
-    if(this.options.trajectory){
-      // Trajectory Mode: draw continuous satellite flight tracks in the time window
-      const range = this.options.timeRange || [this.state.start, this.state.end];
-      for(const s of this.satellites){
-        const pts = s.track.filter(p => p[1]!=null && p[2]>=0);
-        if(!pts.length) continue;
-        ctx.strokeStyle = colors[s.system] || '#4d8c78';
-        ctx.lineWidth = 1.4;
-        ctx.globalAlpha = 0.85;
-        ctx.beginPath();
-        let pen = false;
-        let lastPt = null;
-        for(const p of pts){
-          const az = p[1]*Math.PI/180, rr = r*(90-p[2])/90;
-          const x = cx + Math.sin(az)*rr, y = cy - Math.cos(az)*rr;
-          if(!pen){ ctx.moveTo(x, y); pen = true; } else { ctx.lineTo(x, y); }
-          lastPt = {x, y, az, el: p[2]};
+    const renderSatTrail = (pts, satId, satColor, isLowMask) => {
+      if(!pts || !pts.length) return;
+      const n = pts.length;
+      if(n >= 2){
+        ctx.save();
+        ctx.lineCap = 'round';
+        ctx.lineJoin = 'round';
+        for(let i=0; i<n-1; i++){
+          const p1 = pts[i], p2 = pts[i+1];
+          const az1 = p1[1]*Math.PI/180, rr1 = r*(90-p1[2])/90;
+          const az2 = p2[1]*Math.PI/180, rr2 = r*(90-p2[2])/90;
+          const x1 = cx + Math.sin(az1)*rr1, y1 = cy - Math.cos(az1)*rr1;
+          const x2 = cx + Math.sin(az2)*rr2, y2 = cy - Math.cos(az2)*rr2;
+
+          const t = (i + 1) / n;
+          const alpha = 0.12 + 0.80 * Math.pow(t, 1.6);
+          const width = 0.7 + 1.8 * t;
+
+          ctx.strokeStyle = satColor;
+          ctx.lineWidth = width;
+          ctx.globalAlpha = isLowMask ? alpha * 0.35 : alpha;
+          ctx.beginPath();
+          ctx.moveTo(x1, y1);
+          ctx.lineTo(x2, y2);
+          ctx.stroke();
         }
-        ctx.stroke();
-        // Dot at final point and satellite label
-        if(lastPt){
-          ctx.beginPath();ctx.arc(lastPt.x, lastPt.y, 2.5, 0, Math.PI*2);
-          ctx.fillStyle = colors[s.system];ctx.fill();
-          ctx.font = '9px Consolas';ctx.fillStyle = colors[s.system];
-          ctx.fillText(s.id, lastPt.x, lastPt.y-5);
-          count++;
-        }
+        ctx.restore();
       }
-      ctx.globalAlpha = 1;
-    } else {
-      // Snapshot Mode (single epoch index)
+
+      // Head point at latest position
+      const head = pts[n - 1];
+      const az = head[1]*Math.PI/180, rr = r*(90-head[2])/90;
+      const hx = cx + Math.sin(az)*rr, hy = cy - Math.cos(az)*rr;
+
+      ctx.save();
+      const baseAlpha = isLowMask ? 0.35 : 1.0;
+      // Glowing halo
+      ctx.beginPath();
+      ctx.arc(hx, hy, 4.8, 0, Math.PI * 2);
+      ctx.fillStyle = satColor;
+      ctx.globalAlpha = baseAlpha * 0.28;
+      ctx.fill();
+
+      // Core dot
+      ctx.beginPath();
+      ctx.arc(hx, hy, 2.6, 0, Math.PI * 2);
+      ctx.fillStyle = satColor;
+      ctx.globalAlpha = baseAlpha;
+      ctx.fill();
+
+      // Satellite ID
+      ctx.font = 'bold 9px Consolas, monospace';
+      ctx.fillStyle = satColor;
+      ctx.textAlign = 'center';
+      ctx.globalAlpha = baseAlpha;
+      ctx.fillText(satId, hx, hy - 6);
+      ctx.restore();
+      count++;
+    };
+
+    if(this.options.trajectory){
+      // Trajectory Mode: draw continuous satellite flight tracks with fading trail in the time window
       for(const s of this.satellites){
-        const row=s.track.find(p=>p[0]===this.index);
-        if(!row||row[1]==null||row[2]<0)continue;
-        const az=row[1]*Math.PI/180,rr=r*(90-row[2])/90,x=cx+Math.sin(az)*rr,y=cy-Math.cos(az)*rr;
-        ctx.fillStyle=colors[s.system];ctx.globalAlpha=row[2]<this.mask||row[4]!==0?.3:1;
-        ctx.beginPath();ctx.arc(x,y,4,0,Math.PI*2);ctx.fill();
-        ctx.font='9px Consolas';ctx.fillText(s.id,x,y-8);
-        ctx.globalAlpha=1;count++;
+        const pts = (s.track || []).filter(p => p[1]!=null && p[2]>=0);
+        if(!pts.length) continue;
+        const satColor = colors[s.system] || '#4d8c78';
+        const lastEl = pts[pts.length - 1][2];
+        const isLowMask = lastEl < this.mask;
+        renderSatTrail(pts, s.id, satColor, isLowMask);
+      }
+    } else {
+      // Snapshot Mode: draw historical comet tail (past 30 epochs) ending at current epoch
+      for(const s of this.satellites){
+        const track = s.track || [];
+        const currIdx = track.findIndex(p => p[0] === this.index);
+        if(currIdx < 0) continue;
+        const row = track[currIdx];
+        if(!row || row[1]==null || row[2]<0) continue;
+
+        // Take up to 30 past epochs as dynamic trailing tail
+        const startIdx = Math.max(0, currIdx - 30);
+        const trailPts = track.slice(startIdx, currIdx + 1).filter(p => p[1]!=null && p[2]>=0);
+        const satColor = colors[s.system] || '#4d8c78';
+        const isLowMask = row[2] < this.mask || row[4] !== 0;
+        renderSatTrail(trailPts, s.id, satColor, isLowMask);
       }
     }
     if(!count){
